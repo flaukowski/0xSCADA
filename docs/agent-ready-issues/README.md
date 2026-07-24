@@ -34,3 +34,5 @@ Review process for all of them: **Build → Gate → Hunt → Fix** — see
 [CONTRIBUTING.md](../../CONTRIBUTING.md) and
 [QE-METHODOLOGY.md](../QE-METHODOLOGY.md). PRs must carry the
 `City-Agent: <agent-name>` attribution line.
+
+<!-- dco workflow live-verification; branch deleted after test -->
