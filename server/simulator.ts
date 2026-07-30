@@ -4,10 +4,13 @@ import { cachedEventBridge } from "./websocket/cached-event-bridge";
 import { getFluxPublisher } from "./services/flux";
 import { natsPublisher } from "./services/nats";
 import { getAnchorPipeline } from "./bridge";
+import { ANALOG_CHANNELS_BY_ASSET_TYPE, analogValue } from "./simulator-analog";
 
 interface SimulatorConfig {
   enabled: boolean;
   eventIntervalMs: number;
+  analogIntervalMs: number;
+  analogSeed: number;
 }
 
 interface SimAsset {
@@ -24,13 +27,19 @@ interface SimAsset {
 class FieldSimulator {
   private config: SimulatorConfig;
   private intervalId: NodeJS.Timeout | null = null;
+  private analogIntervalId: NodeJS.Timeout | null = null;
+  private analogTick = 0;
   private assets: SimAsset[] = [];
   private isInitialized = false;
 
   constructor() {
+    const analogInterval = parseInt(process.env.SIMULATOR_ANALOG_INTERVAL_MS || "2000");
     this.config = {
       enabled: process.env.SIMULATOR_ENABLED !== "false",
       eventIntervalMs: parseInt(process.env.SIMULATOR_INTERVAL_MS || "10000"),
+      // A malformed interval would make setInterval fire every tick — clamp.
+      analogIntervalMs: Number.isFinite(analogInterval) && analogInterval >= 100 ? analogInterval : 2000,
+      analogSeed: parseInt(process.env.SIMULATOR_ANALOG_SEED || "1") || 1,
     };
   }
 
@@ -68,7 +77,12 @@ class FieldSimulator {
       this.generateEvent();
     }, this.config.eventIntervalMs);
 
+    this.analogIntervalId = setInterval(() => {
+      this.emitAnalogTick();
+    }, this.config.analogIntervalMs);
+
     log("🏭 Field simulator started — publishing to Flux", "simulator");
+    log(`   Analog tag interval: ${this.config.analogIntervalMs}ms`, "simulator");
   }
 
   stop() {
@@ -76,6 +90,33 @@ class FieldSimulator {
       clearInterval(this.intervalId);
       this.intervalId = null;
       log("⏸️  Field simulator stopped", "simulator");
+    }
+    if (this.analogIntervalId) {
+      clearInterval(this.analogIntervalId);
+      this.analogIntervalId = null;
+    }
+  }
+
+  /**
+   * Broadcast one continuous analog sample per asset channel (#33). These are
+   * real numeric time series for the analytics consumers (predictive, twin,
+   * SPC, tuning) — deterministic for a fixed SIMULATOR_ANALOG_SEED.
+   */
+  private emitAnalogTick() {
+    const tick = this.analogTick++;
+    for (const asset of this.assets) {
+      const channels = ANALOG_CHANNELS_BY_ASSET_TYPE[asset.assetType] ?? [];
+      for (const spec of channels) {
+        const tagName = `${asset.nameOrTag}.${spec.channel}`;
+        try {
+          tagStreamServer.broadcastTagUpdate({
+            tagName,
+            value: analogValue(spec, tagName, tick, this.config.analogSeed),
+            quality: "good",
+            timestamp: new Date().toISOString(),
+          });
+        } catch { /* WebSocket not connected — that's fine */ }
+      }
     }
   }
 
