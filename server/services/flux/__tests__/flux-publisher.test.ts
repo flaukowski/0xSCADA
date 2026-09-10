@@ -135,8 +135,16 @@ describe("FluxPublisher", () => {
       await publisher.flush();
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      const [url] = mockFetch.mock.calls[0];
+      const [url, init] = mockFetch.mock.calls[0];
       expect(url).toBe("http://localhost:3000/api/events/batch");
+      // The live engine takes { events: [...] }, not a bare array (#92).
+      const body = JSON.parse(init.body);
+      expect(Array.isArray(body)).toBe(false);
+      expect(body.events).toHaveLength(2);
+      expect(body.events.map((e: { payload: { entity_id: string } }) => e.payload.entity_id)).toEqual([
+        "scada/pump-01",
+        "scada/pump-02",
+      ]);
     });
 
     it("should do nothing when queue is empty", async () => {
