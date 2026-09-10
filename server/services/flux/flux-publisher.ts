@@ -224,10 +224,15 @@ export class FluxPublisher {
   }
 
   private async postBatch(events: FluxEvent[]): Promise<void> {
+    // The Flux docs show the batch body as a bare array; the public instance
+    // (api.flux-universe.com, checked 2026-09-10) rejects that with
+    // "invalid type: map, expected a sequence" and accepts { events: [...] }.
+    // Every batch this publisher ever sent as an array was refused and
+    // re-queued forever (#92). Send what the live engine takes.
     const res = await fetch(`${this.config.url}/api/events/batch`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...this.authHeaders() },
-      body: JSON.stringify(events),
+      body: JSON.stringify({ events }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
   }

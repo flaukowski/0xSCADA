@@ -204,21 +204,48 @@ export class FieldSimulator {
    * than the wall clock, keeping the emitted series reproducible.
    */
   private emitAnalogSamples() {
-    const elapsedMs = this.analogTick * this.config.analogIntervalMs;
+    const tick = this.analogTick;
+    const elapsedMs = tick * this.config.analogIntervalMs;
     this.analogTick++;
+    const at = new Date().toISOString();
 
     for (const asset of this.assets) {
+      // One Flux update per asset per tick (#92): the live process values and
+      // the provenance a counterparty needs to recompute them. The series is a
+      // pure function of (spec, elapsedMs, seedForTag(tag)); it is simulated
+      // and says so on every event (docs/api/attestation-history.md).
+      const fluxProps: Record<string, unknown> = {
+        simulated: true,
+        analog_series: "server/simulator.ts generateAnalogSample(spec, elapsedMs, seedForTag(tag))",
+        analog_seed_scheme: "seedForTag(`${ASSET}.${CHANNEL}`)",
+        analog_tick: tick,
+        analog_interval_ms: this.config.analogIntervalMs,
+        analog_elapsed_ms: elapsedMs,
+        analog_at: at,
+      };
+      let channels = 0;
       for (const spec of analogChannelsForAsset(asset.assetType)) {
         const tagName = `${asset.nameOrTag}.${spec.channel}`;
-        const value = generateAnalogSample(spec, elapsedMs, seedForTag(tagName));
+        const seed = seedForTag(tagName);
+        const value = generateAnalogSample(spec, elapsedMs, seed);
         try {
           tagStreamServer.broadcastTagUpdate({
             tagName,
             value,
             quality: "good",
-            timestamp: new Date().toISOString(),
+            timestamp: at,
           });
         } catch { /* WebSocket not connected — that's fine */ }
+        const key = spec.channel.toLowerCase();
+        fluxProps[key] = value;
+        fluxProps[`${key}_unit`] = spec.unit;
+        fluxProps[`${key}_seed`] = seed;
+        channels++;
+      }
+      if (channels > 0) {
+        try {
+          getFluxPublisher().publishAsset(asset.nameOrTag.toLowerCase(), fluxProps);
+        } catch { /* Flux disabled or unreachable — the tag stream still got the sample */ }
       }
     }
   }
