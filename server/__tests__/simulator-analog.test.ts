@@ -339,3 +339,78 @@ describe('discrete event stream is unchanged', () => {
     sim.stop();
   });
 });
+
+describe('analog samples reach Flux (#92)', () => {
+  const EXPECTED_ASSETS = ['tr-main-01', 'bk-feeder-01', 'inv-01', 'mcc-pump-01', 'bk-feeder-02', 'inv-02'];
+
+  it('publishes one asset entity per tick carrying every channel value, unit and seed', async () => {
+    const sim = await startSimulator({
+      SIMULATOR_ENABLED: 'true',
+      SIMULATOR_ANALOG_INTERVAL_MS: '2000',
+      SIMULATOR_INTERVAL_MS: '3600000',
+    });
+    expect(publishAsset).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(2000);
+    expect(publishAsset.mock.calls.map(([id]) => id)).toEqual(EXPECTED_ASSETS);
+
+    // Values on the wire are the same pure function the tag stream got.
+    const byId = new Map(publishAsset.mock.calls.map(([id, props]) => [id, props as Record<string, unknown>]));
+    const tr = byId.get('tr-main-01')!;
+    for (const spec of ANALOG_CHANNELS.TRANSFORMER) {
+      const tag = `TR-MAIN-01.${spec.channel}`;
+      const key = spec.channel.toLowerCase();
+      expect(tr[key]).toBe(generateAnalogSample(spec, 0, seedForTag(tag)));
+      expect(tr[`${key}_unit`]).toBe(spec.unit);
+      expect(tr[`${key}_seed`]).toBe(seedForTag(tag));
+    }
+    expect(tr.analog_tick).toBe(0);
+    expect(tr.analog_elapsed_ms).toBe(0);
+    expect(tr.analog_interval_ms).toBe(2000);
+
+    // Second tick advances elapsed time, and the value moves with it.
+    vi.advanceTimersByTime(2000);
+    expect(publishAsset).toHaveBeenCalledTimes(EXPECTED_ASSETS.length * 2);
+    const tr2 = publishAsset.mock.calls[EXPECTED_ASSETS.length][1] as Record<string, unknown>;
+    expect(tr2.analog_tick).toBe(1);
+    expect(tr2.analog_elapsed_ms).toBe(2000);
+    expect(tr2.temperature).toBe(
+      generateAnalogSample(ANALOG_CHANNELS.TRANSFORMER[0], 2000, seedForTag('TR-MAIN-01.TEMPERATURE')),
+    );
+
+    sim.stop();
+  });
+
+  it('labels every analog publish as simulated and names the generator (integrity rule)', async () => {
+    const sim = await startSimulator({
+      SIMULATOR_ENABLED: 'true',
+      SIMULATOR_ANALOG_INTERVAL_MS: '2000',
+      SIMULATOR_INTERVAL_MS: '3600000',
+    });
+    vi.advanceTimersByTime(6000);
+    expect(publishAsset.mock.calls.length).toBeGreaterThan(0);
+    for (const [, props] of publishAsset.mock.calls) {
+      const p = props as Record<string, unknown>;
+      expect(p.simulated).toBe(true);
+      expect(p.analog_series).toContain('generateAnalogSample');
+      expect(p.analog_seed_scheme).toContain('seedForTag');
+      expect(typeof p.analog_at).toBe('string');
+    }
+    sim.stop();
+  });
+
+  it('a Flux publish failure does not stop the tag stream', async () => {
+    publishAsset.mockImplementationOnce(() => {
+      throw new Error('flux down');
+    });
+    const sim = await startSimulator({
+      SIMULATOR_ENABLED: 'true',
+      SIMULATOR_ANALOG_INTERVAL_MS: '2000',
+      SIMULATOR_INTERVAL_MS: '3600000',
+    });
+    vi.advanceTimersByTime(2000);
+    expect(broadcastTagUpdate).toHaveBeenCalledTimes(EXPECTED_TAGS.length);
+    expect(publishAsset).toHaveBeenCalledTimes(EXPECTED_ASSETS.length);
+    sim.stop();
+  });
+});
